@@ -29,6 +29,7 @@ type PRKeyMap struct {
 	ApproveWorkflows     key.Binding
 	ToggleSmartFiltering key.Binding
 	ViewIssues           key.Binding
+	CopyBranch           key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -107,6 +108,10 @@ var PRKeys = PRKeyMap{
 	ViewIssues: key.NewBinding(
 		key.WithKeys("s"),
 		key.WithHelp("s", "switch to issues"),
+	),
+	CopyBranch: key.NewBinding(
+		key.WithKeys("b"),
+		key.WithHelp("b", "copy branch name"),
 	),
 }
 
@@ -196,6 +201,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.ViewIssues
 		case "summaryViewMore":
 			key = &PRKeys.SummaryViewMore
+		case "copyBranch":
+			key = &PRKeys.CopyBranch
 		default:
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}

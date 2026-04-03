@@ -119,15 +119,18 @@ func (k KeyMap) NavigationKeys() []key.Binding {
 }
 
 func (k KeyMap) AppKeys() []key.Binding {
-	return []key.Binding{
+	bindings := []key.Binding{
 		k.Refresh,
 		k.RefreshAll,
 		k.TogglePreview,
 		k.OpenGithub,
 		k.CopyNumber,
 		k.CopyUrl,
-		k.Search,
 	}
+	if k.viewType == config.PRsView {
+		bindings = append(bindings, PRKeys.CopyBranch)
+	}
+	return append(bindings, k.Search)
 }
 
 func (k KeyMap) QuitAndHelpKeys() []key.Binding {

@@ -35,3 +35,7 @@ func (data Data) GetUpdatedAt() time.Time {
 func (data Data) GetCreatedAt() time.Time {
 	return data.Primary.CreatedAt
 }
+
+func (data Data) GetBranchName() string {
+	return data.Primary.HeadRefName
+}

@@ -448,6 +448,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prView.SetSummaryViewMore()
 				m.syncSidebar()
 				return m, nil
+
+			case key.Matches(msg, keys.PRKeys.CopyBranch):
+				var cmd tea.Cmd
+				if currRowData == nil || reflect.ValueOf(currRowData).IsNil() {
+					cmd = m.notifyErr("Current selection isn't associated with a PR")
+					return m, cmd
+				}
+				prData, ok := currRowData.(*prrow.Data)
+				if !ok {
+					cmd = m.notifyErr("Copy branch is only available for PRs")
+					return m, cmd
+				}
+				branch := prData.GetBranchName()
+				err := clipboard.WriteAll(branch)
+				if err != nil {
+					cmd = m.notifyErr(fmt.Sprintf("Failed copying to clipboard %v", err))
+				} else {
+					cmd = m.notify(fmt.Sprintf("Copied %s to clipboard", branch))
+				}
+				return m, cmd
 			}
 		case m.ctx.View == config.IssuesView:
 			switch {
