@@ -21,13 +21,15 @@ type Model struct {
 }
 
 func NewModel() Model {
+	vp := viewport.New(
+		viewport.WithWidth(0),
+		viewport.WithHeight(0),
+	)
+
 	return Model{
-		IsOpen: false,
-		data:   "",
-		viewport: viewport.New(
-			viewport.WithWidth(0),
-			viewport.WithHeight(0),
-		),
+		IsOpen:     false,
+		data:       "",
+		viewport:   vp,
 		ctx:        nil,
 		emptyState: "Nothing selected...",
 	}
@@ -53,11 +55,32 @@ func (m Model) View() string {
 		return ""
 	}
 
+	if m.ctx.PreviewPosition == "bottom" {
+		height := m.ctx.DynamicPreviewHeight
+		width := m.ctx.DynamicPreviewWidth
+		style := m.ctx.Styles.Sidebar.BottomRoot.
+			Height(height).
+			Width(width)
+
+		if m.data == "" {
+			return style.Align(lipgloss.Center).Render(
+				lipgloss.PlaceVertical(height, lipgloss.Center, m.emptyState),
+			)
+		}
+
+		return style.Render(lipgloss.JoinVertical(
+			lipgloss.Top,
+			m.viewport.View(),
+			m.ctx.Styles.Sidebar.PagerStyle.
+				Render(fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100))),
+		))
+	}
+
+	// Right mode
 	height := m.ctx.MainContentHeight
 	style := m.ctx.Styles.Sidebar.Root.
 		Height(height).
-		Width(m.ctx.DynamicPreviewWidth).
-		MaxWidth(m.ctx.DynamicPreviewWidth)
+		Width(m.ctx.DynamicPreviewWidth)
 
 	if m.data == "" {
 		return style.Align(lipgloss.Center).Render(
@@ -82,6 +105,9 @@ func (m *Model) GetSidebarContentWidth() int {
 	if m.ctx == nil || m.ctx.Config == nil {
 		return 0
 	}
+	if m.ctx.PreviewPosition == "bottom" {
+		return max(0, m.ctx.DynamicPreviewWidth)
+	}
 	return max(0, m.ctx.DynamicPreviewWidth-m.ctx.Styles.Sidebar.BorderWidth)
 }
 
@@ -91,6 +117,10 @@ func (m *Model) ScrollToTop() {
 
 func (m *Model) ScrollToBottom() {
 	m.viewport.GotoBottom()
+}
+
+func (m *Model) YOffset() int {
+	return m.viewport.YOffset()
 }
 
 func (m *Model) ScrollToPercent(percent float64) {
@@ -104,6 +134,10 @@ func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 		return
 	}
 	m.ctx = ctx
-	m.viewport.SetHeight(m.ctx.MainContentHeight - m.ctx.Styles.Sidebar.PagerHeight)
+	if m.ctx.PreviewPosition == "bottom" {
+		m.viewport.SetHeight(m.ctx.DynamicPreviewHeight - m.ctx.Styles.Sidebar.PagerHeight)
+	} else {
+		m.viewport.SetHeight(m.ctx.MainContentHeight - m.ctx.Styles.Sidebar.PagerHeight)
+	}
 	m.viewport.SetWidth(m.GetSidebarContentWidth())
 }

@@ -71,8 +71,7 @@ func (options NewSectionOptions) GetConfigFiltersWithCurrentRemoteAdded(
 	if !ctx.Config.SmartFilteringAtLaunch {
 		return searchValue
 	}
-	repo, err := repository.Current()
-	if err != nil {
+	if ctx.Repo == (repository.Repository{}) {
 		return searchValue
 	}
 	for token := range strings.FieldsSeq(searchValue) {
@@ -80,7 +79,7 @@ func (options NewSectionOptions) GetConfigFiltersWithCurrentRemoteAdded(
 			return searchValue
 		}
 	}
-	return fmt.Sprintf("repo:%s/%s %s", repo.Owner, repo.Name, searchValue)
+	return fmt.Sprintf("repo:%s/%s %s", ctx.Repo.Owner, ctx.Repo.Name, searchValue)
 }
 
 func NewModel(
@@ -89,9 +88,8 @@ func NewModel(
 ) BaseModel {
 	filters := options.GetConfigFiltersWithCurrentRemoteAdded(ctx)
 	isFilteredByCurrentRemote := false
-	repo, err := repository.Current()
-	if err == nil {
-		currentCloneFilter := fmt.Sprintf("repo:%s/%s", repo.Owner, repo.Name)
+	if ctx.Repo != (repository.Repository{}) {
+		currentCloneFilter := fmt.Sprintf("repo:%s/%s", ctx.Repo.Owner, ctx.Repo.Name)
 		for token := range strings.FieldsSeq(filters) {
 			if token == currentCloneFilter {
 				isFilteredByCurrentRemote = true
@@ -183,6 +181,7 @@ type Table interface {
 type Search interface {
 	SetIsSearching(val bool) tea.Cmd
 	IsSearchFocused() bool
+	ViewCompletions() string
 	ResetFilters()
 	GetFilters() string
 	ResetPageInfo()
@@ -222,11 +221,10 @@ func (m *BaseModel) HasRepoNameInConfiguredFilter() bool {
 
 func (m *BaseModel) HasCurrentRepoNameInConfiguredFilter() bool {
 	filters := m.SearchValue
-	repo, err := repository.Current()
-	if err != nil {
+	if m.Ctx.Repo == (repository.Repository{}) {
 		return false
 	}
-	currentCloneFilter := fmt.Sprintf("repo:%s/%s", repo.Owner, repo.Name)
+	currentCloneFilter := fmt.Sprintf("repo:%s/%s", m.Ctx.Repo.Owner, m.Ctx.Repo.Name)
 	for token := range strings.FieldsSeq(filters) {
 		if token == currentCloneFilter {
 			return true
@@ -241,12 +239,11 @@ func (m *BaseModel) SyncSmartFilterWithSearchValue() {
 
 func (m *BaseModel) GetSearchValue() string {
 	searchValue := m.enrichSearchWithTemplateVars()
-	repo, err := repository.Current()
-	if err != nil {
+	if m.Ctx.Repo == (repository.Repository{}) {
 		return searchValue
 	}
 
-	currentCloneFilter := fmt.Sprintf("repo:%s/%s", repo.Owner, repo.Name)
+	currentCloneFilter := fmt.Sprintf("repo:%s/%s", m.Ctx.Repo.Owner, m.Ctx.Repo.Name)
 	var searchValueWithoutCurrentCloneFilter []string
 	for token := range strings.FieldsSeq(searchValue) {
 		if token != currentCloneFilter {
@@ -350,7 +347,13 @@ func (m *BaseModel) GetIsLoading() bool {
 func (m *BaseModel) SetIsSearching(val bool) tea.Cmd {
 	m.IsSearching = val
 	if val {
-		return tea.Batch(m.SearchBar.Focus(), m.SearchBar.Init())
+		cmds := make([]tea.Cmd, 0)
+		cmd := m.SearchBar.Focus()
+		cmds = append(cmds, cmd)
+		m.SearchBar.CursorEnd()
+		m.SearchBar, cmd = m.SearchBar.Update(nil)
+		cmds = append(cmds, cmd)
+		return tea.Sequence(cmds...)
 	} else {
 		m.SearchBar.Blur()
 		return nil
@@ -359,6 +362,10 @@ func (m *BaseModel) SetIsSearching(val bool) tea.Cmd {
 
 func (m *BaseModel) ResetFilters() {
 	m.SearchBar.SetValue(m.GetSearchValue())
+}
+
+func (m *BaseModel) ViewCompletions() string {
+	return m.SearchBar.ViewCompletions()
 }
 
 func (m *BaseModel) ResetPageInfo() {
@@ -436,13 +443,15 @@ func (m *BaseModel) GetMainContent() string {
 
 func (m *BaseModel) View() string {
 	search := m.SearchBar.View(m.Ctx)
-	return m.Ctx.Styles.Section.ContainerStyle.Render(
-		lipgloss.JoinVertical(
-			lipgloss.Left,
-			search,
-			m.GetMainContent(),
-		),
-	)
+	return m.Ctx.Styles.Section.ContainerStyle.
+		Width(m.Ctx.MainContentWidth).
+		Render(
+			lipgloss.JoinVertical(
+				lipgloss.Left,
+				search,
+				m.GetMainContent(),
+			),
+		)
 }
 
 func (m *BaseModel) ResetRows() {

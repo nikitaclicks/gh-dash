@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"runtime/debug"
@@ -16,6 +17,7 @@ import (
 	log "charm.land/log/v2"
 	"github.com/atotto/clipboard"
 	"github.com/cli/go-gh/v2/pkg/browser"
+	"github.com/cli/go-gh/v2/pkg/repository"
 	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
@@ -62,6 +64,7 @@ type Model struct {
 	ctx              *context.ProgramContext
 	taskSpinner      spinner.Model
 	tasks            map[string]context.Task
+	positionOverride string // "" means no override, "right" or "bottom"
 }
 
 func NewModel(location config.Location) Model {
@@ -158,8 +161,18 @@ func (m *Model) initScreen() tea.Msg {
 	return initMsg{Config: cfg, RepoUrl: url}
 }
 
+type repoDeterminedMsg struct {
+	repo repository.Repository
+	err  error
+}
+
+func (m *Model) determineRepo() tea.Msg {
+	repo, err := repository.Current()
+	return repoDeterminedMsg{repo: repo, err: err}
+}
+
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tea.RequestBackgroundColor, m.initScreen)
+	return tea.Batch(tea.RequestBackgroundColor, m.initScreen, m.determineRepo)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -270,7 +283,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.TogglePreview):
 			m.sidebar.IsOpen = !m.sidebar.IsOpen
-			m.syncMainContentWidth()
+			m.syncMainContentDimensions()
+
+		case key.Matches(msg, m.keys.TogglePreviewPosition):
+			if m.sidebar.IsOpen {
+				if m.ctx.PreviewPosition == "right" {
+					m.positionOverride = "bottom"
+				} else {
+					m.positionOverride = "right"
+				}
+				m.syncMainContentDimensions()
+				m.syncProgramContext()
+				cmd := m.syncSidebar()
+				cmds = append(cmds, cmd)
+			}
 
 		case key.Matches(msg, m.keys.Refresh):
 			if currSection != nil {
@@ -289,10 +315,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, fetchSectionsCmds)
 
 		case key.Matches(msg, m.keys.Redraw):
-		// TODO: this doesn't exist in bubbletea v2
-		// can't find a way to just ask to send bubbletea's internal repaintMsg{},
-		// so this seems like the lightest-weight alternative
-		// return m, tea.Batch(tea.ExitAltScreen, tea.EnterAltScreen)
+			// with bubbletea v2's declarative approach, if we just clear the screen then tea will redraw for us
+			return m, tea.ClearScreen
 
 		case key.Matches(msg, m.keys.Search):
 			if currSection != nil {
@@ -301,14 +325,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case key.Matches(msg, m.keys.Help):
-			if !m.footer.ShowAll {
-				m.ctx.MainContentHeight = m.ctx.MainContentHeight +
-					common.FooterHeight - common.ExpandedHelpHeight
-			} else {
-				m.ctx.MainContentHeight = m.ctx.MainContentHeight +
-					common.ExpandedHelpHeight - common.FooterHeight
-			}
 			m.footer.ShowAll = !m.footer.ShowAll
+			m.syncMainContentDimensions()
 
 		case key.Matches(msg, m.keys.CopyNumber):
 			var cmd tea.Cmd
@@ -682,13 +700,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctx.View = m.ctx.Config.Defaults.View
 		m.currSectionId = m.getCurrentViewDefaultSection()
 		m.sidebar.IsOpen = msg.Config.Defaults.Preview.Open
-		m.syncMainContentWidth()
+		m.syncMainContentDimensions()
 
 		newSections, fetchSectionsCmds := m.fetchAllViewSections()
 		m.setCurrentViewSections(newSections)
 		m.tabs.SetCurrSectionId(1)
 		cmds = append(cmds, fetchSectionsCmds, m.tabs.Init(), fetchUser,
 			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval())
+
+	case repoDeterminedMsg:
+		m.ctx.Repo = msg.repo
 
 	case intervalRefresh:
 		newSections, fetchSectionsCmds := m.fetchAllViewSections()
@@ -824,7 +845,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if zone.Get("donate").InBounds(msg) {
 			log.Info("Donate clicked", "msg", msg)
 			openCmd := func() tea.Msg {
-				b := browser.New("", os.Stdout, os.Stdin)
+				// Discard the launcher's stdout/stderr so any noise (e.g.
+				// GTK / GVFS warnings from xdg-open / gnome-open) does not
+				// leak into the TUI's terminal and corrupt the display.
+				// See #829, #584, #679.
+				b := browser.New("", io.Discard, io.Discard)
 				err := b.Browse("https://github.com/sponsors/dlvhdr")
 				if err != nil {
 					return constants.ErrMsg{Err: err}
@@ -918,11 +943,19 @@ func (m Model) View() tea.View {
 	content := "No sections defined"
 	currSection := m.getCurrSection()
 	if currSection != nil {
-		content = lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			m.getCurrSection().View(),
-			m.sidebar.View(),
-		)
+		if m.ctx.PreviewPosition == "bottom" && m.sidebar.IsOpen {
+			content = lipgloss.JoinVertical(
+				lipgloss.Left,
+				m.getCurrSection().View(),
+				m.sidebar.View(),
+			)
+		} else {
+			content = lipgloss.JoinHorizontal(
+				lipgloss.Top,
+				m.getCurrSection().View(),
+				m.sidebar.View(),
+			)
+		}
 	}
 	s.WriteString(content)
 	s.WriteString("\n")
@@ -941,7 +974,34 @@ func (m Model) View() tea.View {
 		s.WriteString(m.footer.View())
 	}
 
-	v.SetContent(zone.Scan(s.String()))
+	layers := []*lipgloss.Layer{
+		lipgloss.NewLayer(zone.Scan(s.String())),
+	}
+
+	if currSection != nil {
+		searchCmp := currSection.ViewCompletions()
+		if searchCmp != "" {
+			y := common.HeaderHeight + common.SearchHeight + 1
+			layers = append(layers, lipgloss.NewLayer(searchCmp).X(1).Y(y))
+		}
+	}
+
+	prCmp := m.prView.ViewCompletions()
+	previewPos := m.ctx.PreviewCursorPosition()
+	if prCmp != "" {
+		y := m.ctx.ScreenHeight - common.FooterHeight - m.prView.InputBoxLineFromBottom() - common.InputBoxHeight - 6
+		layers = append(layers, lipgloss.NewLayer(prCmp).X(previewPos.X+3).Y(y))
+	}
+
+	issueCmp := m.issueSidebar.ViewCompletions()
+	if issueCmp != "" {
+		y := m.ctx.ScreenHeight - common.FooterHeight - m.issueSidebar.InputBoxLineFromButton() - common.InputBoxHeight - 6
+		layers = append(layers, lipgloss.NewLayer(issueCmp).X(previewPos.X+3).Y(y))
+	}
+
+	comp := lipgloss.NewCompositor(layers...)
+	v.SetContent(comp.Render())
+
 	return v
 }
 
@@ -1006,12 +1066,14 @@ func (m *Model) onWindowSizeChanged(msg tea.WindowSizeMsg) {
 	m.footer.SetWidth(msg.Width)
 	m.ctx.ScreenWidth = msg.Width
 	m.ctx.ScreenHeight = msg.Height
-	if m.footer.ShowAll {
-		m.ctx.MainContentHeight = msg.Height - common.TabsHeight - common.ExpandedHelpHeight
-	} else {
-		m.ctx.MainContentHeight = msg.Height - common.TabsHeight - common.FooterHeight
+	if m.ctx.Config != nil {
+		if m.ctx.Config.Defaults.Preview.Position == "auto" ||
+			m.ctx.Config.Defaults.Preview.Position == "" {
+			m.positionOverride = ""
+		}
+		m.syncMainContentDimensions()
+		m.syncSidebar()
 	}
-	m.syncMainContentWidth()
 }
 
 func (m *Model) syncProgramContext() {
@@ -1068,18 +1130,83 @@ func (m *Model) updateCurrentSection(msg tea.Msg) (cmd tea.Cmd) {
 	return m.updateSection(section.GetId(), section.GetType(), msg)
 }
 
-func (m *Model) syncMainContentWidth() {
-	sideBarOffset := 0
-	if m.sidebar.IsOpen {
+const minTableWidthForRightPreview = 80
+
+func (m *Model) resolvePreviewPosition() string {
+	pos := m.ctx.Config.Defaults.Preview.Position
+	if pos == "" {
+		pos = "auto"
+	}
+
+	if m.positionOverride != "" {
+		return m.positionOverride
+	}
+
+	if pos == "right" || pos == "bottom" {
+		return pos
+	}
+
+	// auto: check if right mode would leave enough room for the main content
+	w := m.ctx.Config.Defaults.Preview.Width
+	if w > 0 && w < 1 {
+		w *= float64(m.ctx.ScreenWidth)
+	}
+	previewWidth := min(int(w), m.ctx.ScreenWidth)
+	tableWidth := m.ctx.ScreenWidth - previewWidth
+	if tableWidth < minTableWidthForRightPreview {
+		return "bottom"
+	}
+	return "right"
+}
+
+func (m *Model) getBaseContentHeight() int {
+	if m.footer.ShowAll {
+		// Measure actual footer height — the ExpandedHelpHeight constant
+		// doesn't account for custom keybindings or view-specific bindings.
+		footerHeight := lipgloss.Height(m.footer.View())
+		return m.ctx.ScreenHeight - common.TabsHeight - footerHeight
+	}
+	return m.ctx.ScreenHeight - common.TabsHeight - common.FooterHeight
+}
+
+func (m *Model) syncMainContentDimensions() {
+	m.ctx.PreviewPosition = m.resolvePreviewPosition()
+
+	if !m.sidebar.IsOpen {
+		m.ctx.MainContentWidth = m.ctx.ScreenWidth
+		m.ctx.MainContentHeight = m.getBaseContentHeight()
+		m.ctx.DynamicPreviewWidth = 0
+		m.ctx.DynamicPreviewHeight = 0
+		m.ctx.SidebarOpen = false
+		return
+	}
+
+	m.ctx.SidebarOpen = true
+
+	if m.ctx.PreviewPosition == "bottom" {
+		m.ctx.MainContentWidth = m.ctx.ScreenWidth
+
+		// Subtract border height: lipgloss Height() sets content height,
+		// and BorderTop adds an extra row outside of that.
+		availableHeight := m.getBaseContentHeight() - m.ctx.Styles.Sidebar.BorderWidth
+		h := m.ctx.Config.Defaults.Preview.Height
+		if h > 0 && h < 1 {
+			h *= float64(availableHeight)
+		}
+		m.ctx.DynamicPreviewHeight = min(int(h), availableHeight)
+		m.ctx.MainContentHeight = availableHeight - m.ctx.DynamicPreviewHeight
+		m.ctx.DynamicPreviewWidth = m.ctx.ScreenWidth
+	} else {
+		m.ctx.MainContentHeight = m.getBaseContentHeight()
+
 		w := m.ctx.Config.Defaults.Preview.Width
 		if w > 0 && w < 1 {
 			w *= float64(m.ctx.ScreenWidth)
 		}
 		m.ctx.DynamicPreviewWidth = min(int(w), m.ctx.ScreenWidth)
-		sideBarOffset = m.ctx.DynamicPreviewWidth
+		m.ctx.MainContentWidth = m.ctx.ScreenWidth - m.ctx.DynamicPreviewWidth
+		m.ctx.DynamicPreviewHeight = 0
 	}
-	m.ctx.MainContentWidth = m.ctx.ScreenWidth - sideBarOffset
-	m.ctx.SidebarOpen = m.sidebar.IsOpen
 }
 
 func (m *Model) openSidebarForPRInput(setFunc func(bool) tea.Cmd) tea.Cmd {
@@ -1090,7 +1217,7 @@ func (m *Model) openSidebarForPRInput(setFunc func(bool) tea.Cmd) tea.Cmd {
 func (m *Model) openSidebarForInput(setFunc func(bool) tea.Cmd) tea.Cmd {
 	m.sidebar.IsOpen = true
 	cmd := setFunc(true)
-	m.syncMainContentWidth()
+	m.syncMainContentDimensions()
 	m.syncSidebar()
 	m.sidebar.ScrollToBottom()
 	return cmd
@@ -1531,7 +1658,7 @@ func (m *Model) switchSelectedView() tea.Cmd {
 		}
 	}
 
-	m.syncMainContentWidth()
+	m.syncMainContentDimensions()
 	m.setCurrSectionId(m.getCurrentViewDefaultSection())
 
 	var cmds []tea.Cmd
@@ -1549,6 +1676,9 @@ func (m *Model) switchSelectedView() tea.Cmd {
 }
 
 func (m *Model) isUserDefinedKeybinding(msg tea.KeyMsg) bool {
+	if m.ctx == nil || m.ctx.Config == nil {
+		return false
+	}
 	for _, keybinding := range m.ctx.Config.Keybindings.Universal {
 		if keybinding.Builtin == "" && keybinding.Key == msg.String() {
 			return true

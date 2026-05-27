@@ -9,6 +9,16 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
 
+type SelectStyles struct {
+	PopupStyle    lipgloss.Style
+	HelpStyle     lipgloss.Style
+	Pointer       lipgloss.Style
+	ItemStyle     lipgloss.Style
+	Status        lipgloss.Style
+	SelectedStyle lipgloss.Style
+	NoResults     lipgloss.Style
+}
+
 type Styles struct {
 	Colors struct {
 		OpenIssue   compat.AdaptiveColor
@@ -20,6 +30,10 @@ type Styles struct {
 	}
 
 	Common common.CommonStyles
+
+	Search struct {
+		Root lipgloss.Style
+	}
 
 	PrView struct {
 		PillStyle lipgloss.Style
@@ -55,7 +69,9 @@ type Styles struct {
 		PagerHeight    int
 		ContentPadding int
 		Root           lipgloss.Style
+		BottomRoot     lipgloss.Style
 		PagerStyle     lipgloss.Style
+		InputBox       lipgloss.Style
 	}
 	ListViewPort struct {
 		PagerStyle lipgloss.Style
@@ -81,10 +97,8 @@ type Styles struct {
 		Root           lipgloss.Style
 		ViewsSeparator lipgloss.Style
 	}
-	Autocomplete struct {
-		PopupStyle    lipgloss.Style
-		SelectedStyle lipgloss.Style
-	}
+	Select  SelectStyles
+	KeyHint lipgloss.Style
 }
 
 var LogoColor = lipgloss.Color("#00F9FB")
@@ -115,6 +129,10 @@ func InitStyles(theme theme.Theme) Styles {
 	}
 
 	s.Common = common.BuildStyles(theme)
+
+	s.Search.Root = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder(), true).
+		BorderForeground(theme.PrimaryBorder)
 
 	s.PrView.PillStyle = s.Common.MainTextStyle.
 		Border(lipgloss.Border{Left: "", Right: ""}, false, true, false, true).
@@ -177,10 +195,20 @@ func InitStyles(theme theme.Theme) Styles {
 			BottomLeft:  "",
 		}).
 		BorderForeground(theme.PrimaryBorder)
+	s.Sidebar.BottomRoot = lipgloss.NewStyle().
+		BorderTop(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		BorderForeground(theme.PrimaryBorder)
 	s.Sidebar.PagerStyle = lipgloss.NewStyle().
 		Height(s.Sidebar.PagerHeight).
 		Bold(true).
 		Foreground(theme.FaintText)
+
+	s.Sidebar.InputBox = lipgloss.NewStyle().
+		MarginTop(1).
+		Border(lipgloss.NormalBorder()).
+		BorderTop(true).
+		BorderForeground(theme.PrimaryBorder)
 
 	s.ListViewPort.PagerStyle = lipgloss.NewStyle().
 		Padding(0, 1).
@@ -233,15 +261,36 @@ func InitStyles(theme theme.Theme) Styles {
 	s.ViewSwitcher.InactiveView = lipgloss.NewStyle().
 		Background(theme.FaintBorder).
 		Foreground(theme.FaintText)
-	s.Autocomplete.PopupStyle = lipgloss.NewStyle().
+	s.Select.PopupStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.SecondaryBorder).
+		BorderForeground(s.Colors.OpenIssue).
 		Foreground(theme.PrimaryText)
+	s.Select.HelpStyle = lipgloss.NewStyle().
+		Padding(0, 1).
+		Border(lipgloss.NormalBorder(), true, false, false, false).
+		BorderTopForeground(theme.FaintBorder)
+	s.Select.Pointer = lipgloss.NewStyle().
+		Foreground(theme.SuccessText)
+	s.Select.ItemStyle = lipgloss.NewStyle().
+		PaddingRight(1)
+	s.Select.SelectedStyle = s.Select.ItemStyle.
+		Foreground(theme.PrimaryText)
+	s.Select.NoResults = lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
+		Foreground(theme.FaintText).
+		Italic(true)
+	s.Select.Status = lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
+		Foreground(theme.FaintText).
+		Italic(true)
 
-	s.Autocomplete.SelectedStyle = lipgloss.NewStyle().
+	s.KeyHint = lipgloss.NewStyle().
+		PaddingLeft(1).
+		PaddingRight(1).
 		Background(theme.SelectedBackground).
-		Foreground(theme.PrimaryText).
-		Bold(true)
+		Foreground(theme.PrimaryText)
 
 	return s
 }

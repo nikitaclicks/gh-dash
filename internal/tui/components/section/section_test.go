@@ -4,27 +4,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/cli/go-gh/v2/pkg/repository"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prompt"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/search"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/table"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/constants"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/context"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
 
-func currentRepoFilter(t *testing.T) string {
+func currentRepoFilter(t *testing.T, repo repository.Repository) string {
 	t.Helper()
-	t.Setenv("GH_REPO", "https://github.com/dlvhdr/gh-dash")
-	repo, err := repository.Current()
-	if err != nil {
-		t.Fatal("failed to resolve current repository:", err)
-	}
+	t.Setenv("GH_REPO", fmt.Sprintf("https://github.com/%s/%s", repo.Owner, repo.Name))
 	return fmt.Sprintf("repo:%s/%s", repo.Owner, repo.Name)
 }
 
 func TestHasRepoNameInConfiguredFilter(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 
 	tests := []struct {
 		name        string
@@ -67,7 +70,8 @@ func TestHasRepoNameInConfiguredFilter(t *testing.T) {
 }
 
 func TestHasCurrentRepoNameInConfiguredFilter(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 
 	tests := []struct {
 		name        string
@@ -114,13 +118,17 @@ func TestHasCurrentRepoNameInConfiguredFilter(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := BaseModel{SearchValue: tt.searchValue}
+			m.Ctx = &context.ProgramContext{
+				Repo: repo,
+			}
 			require.Equal(t, tt.want, m.HasCurrentRepoNameInConfiguredFilter())
 		})
 	}
 }
 
 func TestSyncSmartFilterWithSearchValue(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 
 	tests := []struct {
 		name        string
@@ -155,6 +163,9 @@ func TestSyncSmartFilterWithSearchValue(t *testing.T) {
 				SearchValue:               tt.searchValue,
 				IsFilteredByCurrentRemote: !tt.wantFlag,
 			}
+			m.Ctx = &context.ProgramContext{
+				Repo: repo,
+			}
 			m.SyncSmartFilterWithSearchValue()
 			require.Equal(t, tt.wantFlag, m.IsFilteredByCurrentRemote)
 		})
@@ -162,7 +173,8 @@ func TestSyncSmartFilterWithSearchValue(t *testing.T) {
 }
 
 func TestGetSearchValue(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 
 	tests := []struct {
 		name                      string
@@ -224,6 +236,9 @@ func TestGetSearchValue(t *testing.T) {
 				SearchValue:               tt.searchValue,
 				IsFilteredByCurrentRemote: tt.isFilteredByCurrentRemote,
 			}
+			m.Ctx = &context.ProgramContext{
+				Repo: repo,
+			}
 
 			got := m.GetSearchValue()
 
@@ -251,12 +266,16 @@ func TestGetSearchValue(t *testing.T) {
 }
 
 func TestGetSearchValue_SimilarRepoNameNotStripped(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 	similarRepo := repoFilter + "-extra"
 
 	m := BaseModel{
 		SearchValue:               similarRepo + " is:open",
 		IsFilteredByCurrentRemote: false,
+	}
+	m.Ctx = &context.ProgramContext{
+		Repo: repo,
 	}
 
 	got := m.GetSearchValue()
@@ -266,7 +285,8 @@ func TestGetSearchValue_SimilarRepoNameNotStripped(t *testing.T) {
 }
 
 func TestGetSearchValue_ManualRepoFilterRemoval(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 
 	tests := []struct {
 		name                      string
@@ -319,6 +339,9 @@ func TestGetSearchValue_ManualRepoFilterRemoval(t *testing.T) {
 				SearchValue:               tt.searchValue,
 				IsFilteredByCurrentRemote: tt.isFilteredByCurrentRemote,
 			}
+			m.Ctx = &context.ProgramContext{
+				Repo: repo,
+			}
 
 			m.SyncSmartFilterWithSearchValue()
 			got := m.GetSearchValue()
@@ -339,7 +362,8 @@ func TestGetSearchValue_ManualRepoFilterRemoval(t *testing.T) {
 }
 
 func TestGetConfigFiltersWithCurrentRemoteAdded(t *testing.T) {
-	repoFilter := currentRepoFilter(t)
+	repo := repository.Repository{Owner: "dlvhdr", Name: "gh-dash"}
+	repoFilter := currentRepoFilter(t, repo)
 
 	tests := []struct {
 		name                   string
@@ -382,6 +406,7 @@ func TestGetConfigFiltersWithCurrentRemoteAdded(t *testing.T) {
 				Config: &config.Config{
 					SmartFilteringAtLaunch: tt.smartFilteringAtLaunch,
 				},
+				Repo: repo,
 			}
 
 			got := options.GetConfigFiltersWithCurrentRemoteAdded(ctx)
@@ -452,6 +477,54 @@ func TestGetPromptConfirmation(t *testing.T) {
 					tt.action,
 					tt.view,
 				)
+			}
+		})
+	}
+}
+
+func TestViewRendersAtMainContentWidth(t *testing.T) {
+	cfg, err := config.ParseConfig(config.Location{
+		ConfigFlag:       "../../../config/testdata/test-config.yml",
+		SkipGlobalConfig: true,
+	})
+	require.NoError(t, err)
+
+	thm := theme.ParseTheme(&cfg)
+	styles := context.InitStyles(thm)
+
+	widths := []int{80, 120, 200}
+	for _, targetWidth := range widths {
+		t.Run(fmt.Sprintf("width_%d", targetWidth), func(t *testing.T) {
+			ctx := &context.ProgramContext{
+				Config:            &cfg,
+				MainContentWidth:  targetWidth,
+				MainContentHeight: 20,
+				Theme:             thm,
+				Styles:            styles,
+			}
+			m := BaseModel{
+				Ctx:       ctx,
+				SearchBar: search.NewModel(ctx, search.SearchOptions{}),
+				Table: table.NewModel(
+					*ctx,
+					constants.Dimensions{Width: targetWidth, Height: 10},
+					time.Now(),
+					time.Now(),
+					nil,
+					nil,
+					"pr",
+					nil,
+					"Loading...",
+					false,
+				),
+			}
+
+			view := m.View()
+			lines := strings.Split(view, "\n")
+			for i, line := range lines {
+				w := lipgloss.Width(line)
+				require.Equal(t, targetWidth, w,
+					"line %d rendered at width %d, expected %d", i, w, targetWidth)
 			}
 		})
 	}

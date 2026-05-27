@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/cli/go-gh/v2/pkg/repository"
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 	"github.com/dlvhdr/gh-dash/v4/internal/utils"
@@ -29,23 +30,26 @@ type Task struct {
 }
 
 type ProgramContext struct {
-	RepoPath            string
-	RepoUrl             string
-	User                string
-	ScreenHeight        int
-	ScreenWidth         int
-	MainContentWidth    int
-	MainContentHeight   int
-	DynamicPreviewWidth int
-	SidebarOpen         bool
-	Config              *config.Config
-	ConfigFlag          string
-	Version             string
-	View                config.ViewType
-	Error               error
-	StartTask           func(task Task) tea.Cmd
-	Theme               theme.Theme
-	Styles              Styles
+	Repo                 repository.Repository
+	RepoPath             string
+	RepoUrl              string
+	User                 string
+	ScreenHeight         int
+	ScreenWidth          int
+	MainContentWidth     int
+	MainContentHeight    int
+	DynamicPreviewWidth  int
+	DynamicPreviewHeight int    // calculated preview height for bottom mode
+	PreviewPosition      string // resolved "right" or "bottom"
+	SidebarOpen          bool
+	Config               *config.Config
+	ConfigFlag           string
+	Version              string
+	View                 config.ViewType
+	Error                error
+	StartTask            func(task Task) tea.Cmd
+	Theme                theme.Theme
+	Styles               Styles
 }
 
 func (ctx *ProgramContext) GetViewSectionsConfig() []config.SectionConfig {
@@ -74,4 +78,18 @@ func (ctx *ProgramContext) GetViewSectionsConfig() []config.SectionConfig {
 	}
 
 	return append([]config.SectionConfig{{Title: ""}}, configs...)
+}
+
+func (ctx *ProgramContext) PreviewCursorPosition() tea.Position {
+	if ctx.PreviewPosition == "right" {
+		return tea.Position{
+			X: ctx.MainContentWidth,
+			Y: ctx.Styles.Pager.Height,
+		}
+	}
+
+	return tea.Position{
+		X: 0,
+		Y: ctx.MainContentHeight,
+	}
 }

@@ -11,10 +11,11 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
-	dataautocomplete "github.com/dlvhdr/gh-dash/v4/internal/data/autocomplete"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/carousel"
-	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/detailedit"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/cmpcontroller"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/fuzzyselect"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/inputbox"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/tasks"
@@ -37,7 +38,7 @@ type Model struct {
 	pr              *prrow.PullRequest
 	width           int
 	carousel        carousel.Model
-	editor          detailedit.Controller
+	editor          cmpcontroller.Controller
 	summaryViewMore bool
 }
 
@@ -49,60 +50,66 @@ func NewModel(ctx *context.ProgramContext) Model {
 		carousel.WithWidth(ctx.MainContentWidth),
 	)
 
+	ta := inputbox.DefaultTextArea(ctx)
+	cmp := cmpcontroller.New(ctx, inputbox.ModelOpts{TextArea: &ta})
+
 	return Model{
 		pr:       nil,
 		carousel: c,
-		editor:   detailedit.New(ctx),
+		editor:   cmp,
 	}
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	editor, cmd, submit, handled := m.editor.Update(msg)
-	m.editor = editor
+	cmd, handled := m.editor.Update(msg)
 
-	if submit != nil {
+	if msg, ok := msg.(tea.KeyMsg); ok && msg.String() == "ctrl+d" {
+		value := m.editor.Value()
+		mode := m.editor.Mode()
+		m.editor.Exit()
 		if m.pr == nil {
 			return m, nil
 		}
 
 		sid := tasks.SectionIdentifier{Id: m.sectionId, Type: prssection.SectionType}
 
-		switch submit.Mode {
-		case detailedit.ModeComment:
-			if len(strings.TrimSpace(submit.Value)) != 0 {
-				return m, tasks.CommentOnPR(m.ctx, sid, m.pr.Data.Primary, submit.Value)
+		switch mode {
+		case cmpcontroller.ModeComment:
+			if len(strings.TrimSpace(value)) != 0 {
+				return m, tasks.CommentOnPR(m.ctx, sid, m.pr.Data.Primary, value)
 			}
 			return m, nil
 
-		case detailedit.ModeApprove:
+		case cmpcontroller.ModeApprove:
 			comment := ""
-			if len(strings.TrimSpace(submit.Value)) != 0 {
-				comment = submit.Value
+			if len(strings.TrimSpace(value)) != 0 {
+				comment = value
 			}
 			return m, tasks.ApprovePR(m.ctx, sid, m.pr.Data.Primary, comment)
 
-		case detailedit.ModeAssign:
-			usernames := dataautocomplete.AllWords(submit.Value)
+		case cmpcontroller.ModeAssign:
+			usernames := fuzzyselect.AllWords(value)
 			if len(usernames) > 0 {
 				return m, tasks.AssignPR(m.ctx, sid, m.pr.Data.Primary, usernames)
 			}
 			return m, nil
 
-		case detailedit.ModeUnassign:
-			usernames := dataautocomplete.AllWords(submit.Value)
+		case cmpcontroller.ModeUnassign:
+			usernames := fuzzyselect.AllWords(value)
 			if len(usernames) > 0 {
 				return m, tasks.UnassignPR(m.ctx, sid, m.pr.Data.Primary, usernames)
 			}
 			return m, nil
 
-		case detailedit.ModeLabel:
-			labels := dataautocomplete.CurrentLabels(submit.Value)
+		case cmpcontroller.ModeLabel:
+			labels := fuzzyselect.CurrentLabels(value)
 			if len(labels) > 0 || len(m.pr.Data.Primary.Labels.Nodes) > 0 {
 				return m, m.label(labels)
 			}
 			return m, nil
 		}
 	}
+
 	if handled {
 		return m, cmd
 	}
@@ -120,6 +127,33 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	if !m.hasData() {
+		return ""
+	}
+
+	body := strings.Builder{}
+	switch m.carousel.SelectedItem() {
+	case tabs[0]:
+		body.WriteString(m.viewOverviewTab())
+	case tabs[1]:
+		body.WriteString(m.renderActivity())
+	case tabs[2]:
+		body.WriteString(m.renderCommits())
+	case tabs[3]:
+		body.WriteString(m.renderChecksOverview())
+		body.WriteString("\n\n")
+		body.WriteString(m.renderChecks())
+	case tabs[4]:
+		body.WriteString(m.renderChangedFiles())
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		m.viewHeader(),
+		lipgloss.NewStyle().Padding(0, m.ctx.Styles.Sidebar.ContentPadding).Render(body.String()),
+	)
+}
+
+func (m *Model) viewHeader() string {
 	header := strings.Builder{}
 
 	header.WriteString(m.renderFullNameAndNumber())
@@ -138,60 +172,60 @@ func (m Model) View() string {
 	)
 
 	header.WriteString("\n")
+	return header.String()
+}
 
+func (m *Model) viewOverviewTab() string {
 	body := strings.Builder{}
-
-	switch m.carousel.SelectedItem() {
-	case tabs[0]:
-		reviewers := m.renderRequestedReviewers()
-		if reviewers != "" {
-			body.WriteString(reviewers)
-			body.WriteString("\n\n")
-		}
-
-		labels := m.renderLabels()
-		if labels != "" {
-			body.WriteString(labels)
-			body.WriteString("\n\n")
-		}
-
-		body.WriteString(m.renderSummary())
+	reviewers := m.renderRequestedReviewers()
+	if reviewers != "" {
+		body.WriteString(reviewers)
 		body.WriteString("\n\n")
-		body.WriteString(
-			m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(" Changes"),
-		)
-		body.WriteString("\n")
-		body.WriteString(m.renderChangesOverview())
-		body.WriteString("\n\n")
-		body.WriteString(
-			m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(" Checks"),
-		)
-		body.WriteString("\n")
-		body.WriteString(m.renderChecksOverview())
-
-		if editorView := m.editor.View(); editorView != "" {
-			body.WriteString(editorView)
-		}
-
-	case tabs[1]:
-		body.WriteString(m.renderActivity())
-	case tabs[2]:
-		body.WriteString(m.renderCommits())
-	case tabs[3]:
-		body.WriteString(m.renderChecksOverview())
-		body.WriteString("\n\n")
-		body.WriteString(m.renderChecks())
-	case tabs[4]:
-		body.WriteString(m.renderChangedFiles())
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		header.String(),
-		lipgloss.NewStyle().Padding(0, m.ctx.Styles.Sidebar.ContentPadding).Render(body.String()),
+	labels := m.renderLabels()
+	if labels != "" {
+		body.WriteString(labels)
+		body.WriteString("\n\n")
+	}
+
+	body.WriteString(m.renderSummary())
+	body.WriteString("\n\n")
+	body.WriteString(
+		m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(" Changes"),
 	)
+	body.WriteString("\n")
+	body.WriteString(m.renderChangesOverview())
+	body.WriteString("\n\n")
+	body.WriteString(
+		m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(" Checks"),
+	)
+	body.WriteString("\n")
+	body.WriteString(m.renderChecksOverview())
+
+	if m.editor.Mode() != cmpcontroller.ModeNone {
+		body.WriteString(m.ctx.Styles.Sidebar.InputBox.Render(m.editor.View()))
+	}
+
+	return body.String()
+}
+
+func (m *Model) ViewCompletions() string {
+	if !m.hasData() {
+		return ""
+	}
+	return m.editor.ViewCompletions()
+}
+
+func (m *Model) InputBoxLineFromBottom() int {
+	return m.editor.LineFromBottom()
 }
 
 func (m *Model) renderFullNameAndNumber() string {
+	if !m.hasData() {
+		return ""
+	}
+
 	return common.RenderPreviewHeader(
 		m.ctx.Theme,
 		m.width,
@@ -204,6 +238,10 @@ func (m *Model) renderFullNameAndNumber() string {
 }
 
 func (m *Model) renderTitle() string {
+	if !m.hasData() {
+		return ""
+	}
+
 	return common.RenderPreviewTitle(
 		m.ctx.Theme,
 		m.ctx.Styles.Common,
@@ -457,7 +495,7 @@ func (m *Model) renderAuthor() string {
 func (m *Model) renderSummary() string {
 	width := m.getIndentedContentWidth()
 	// Strip HTML comments from body and cleanup body.
-	body := htmlCommentRegex.ReplaceAllString(m.pr.Data.Primary.Body, "")
+	body := htmlCommentRegex.ReplaceAllString(m.pr.Data.Enriched.Body, "")
 	body = lineCleanupRegex.ReplaceAllString(body, "")
 
 	desc := m.ctx.Styles.Common.MainTextStyle.Bold(true).Underline(true).Render(" Summary")
@@ -549,15 +587,13 @@ func (m *Model) EnrichCurrRow() tea.Cmd {
 func (m *Model) SetWidth(width int) {
 	m.width = width
 	m.carousel.SetWidth(width)
-	m.editor.SetWidth(width)
+	m.editor.SetWidth(
+		m.getIndentedContentWidth() - m.ctx.Styles.Sidebar.InputBox.GetHorizontalFrameSize(),
+	)
 }
 
 func (m *Model) IsTextInputBoxFocused() bool {
 	return m.editor.Active()
-}
-
-func (m *Model) GetIsCommenting() bool {
-	return m.editor.Mode() == detailedit.ModeComment
 }
 
 func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
@@ -569,6 +605,14 @@ func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 			Selected: lipgloss.NewStyle().Padding(0, 1).Bold(true),
 		},
 	)
+
+	// TODO: move this to the NewModel func
+	// currently it's not possible since the styles aren't yet instantiated when NewModel is called
+	m.editor.SetSelectStyles(ctx.Styles.Select)
+}
+
+func (m *Model) GetIsCommenting() bool {
+	return m.editor.Mode() == cmpcontroller.ModeComment
 }
 
 func (m *Model) SetIsCommenting(isCommenting bool) tea.Cmd {
@@ -577,32 +621,30 @@ func (m *Model) SetIsCommenting(isCommenting bool) tea.Cmd {
 	}
 
 	if !isCommenting {
-		if m.editor.Mode() == detailedit.ModeComment {
-			m.editor = m.editor.Exit()
+		if m.editor.Mode() == cmpcontroller.ModeComment {
+			m.editor.Exit()
 		}
 		return nil
 	}
 
-	editor, cmd := m.editor.Enter(detailedit.EnterOptions{
-		Mode:                             detailedit.ModeComment,
+	m.editor.SetAutocompleteSource(&fuzzyselect.UserMentionSource{WithAtSymbol: true})
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:                             cmpcontroller.ModeComment,
 		Prompt:                           constants.CommentPrompt,
-		Source:                           dataautocomplete.UserMentionSource{},
 		Repo:                             m.repoRef(),
-		SuggestionKind:                   detailedit.SuggestionUsers,
-		EnterFetch:                       detailedit.FetchSilent,
+		EnterFetch:                       cmpcontroller.FetchSilent,
 		ConfirmDiscardOnCancel:           true,
 		HideAutocompleteWhenContextEmpty: true,
 	})
-	m.editor = editor
 	return cmd
 }
 
 func (m *Model) getIndentedContentWidth() int {
-	return m.width - 3*m.ctx.Styles.Sidebar.ContentPadding
+	return m.width - 2*m.ctx.Styles.Sidebar.ContentPadding
 }
 
 func (m *Model) GetIsApproving() bool {
-	return m.editor.Mode() == detailedit.ModeApprove
+	return m.editor.Mode() == cmpcontroller.ModeApprove
 }
 
 func (m *Model) SetIsApproving(isApproving bool) tea.Cmd {
@@ -611,29 +653,27 @@ func (m *Model) SetIsApproving(isApproving bool) tea.Cmd {
 	}
 
 	if !isApproving {
-		if m.editor.Mode() == detailedit.ModeApprove {
-			m.editor = m.editor.Exit()
+		if m.editor.Mode() == cmpcontroller.ModeApprove {
+			m.editor.Exit()
 		}
 		return nil
 	}
 
-	editor, cmd := m.editor.Enter(detailedit.EnterOptions{
-		Mode:                             detailedit.ModeApprove,
+	m.editor.SetAutocompleteSource(&fuzzyselect.UserMentionSource{WithAtSymbol: true})
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:                             cmpcontroller.ModeApprove,
 		Prompt:                           constants.ApprovalPrompt,
 		InitialValue:                     m.ctx.Config.Defaults.PrApproveComment,
-		Source:                           dataautocomplete.WhitespaceSource{},
 		Repo:                             m.repoRef(),
-		SuggestionKind:                   detailedit.SuggestionUsers,
-		EnterFetch:                       detailedit.FetchSilent,
+		EnterFetch:                       cmpcontroller.FetchSilent,
 		ConfirmDiscardOnCancel:           true,
-		HideAutocompleteWhenContextEmpty: false,
+		HideAutocompleteWhenContextEmpty: true,
 	})
-	m.editor = editor
 	return cmd
 }
 
 func (m *Model) GetIsAssigning() bool {
-	return m.editor.Mode() == detailedit.ModeAssign
+	return m.editor.Mode() == cmpcontroller.ModeAssign
 }
 
 func (m *Model) SetIsAssigning(isAssigning bool) tea.Cmd {
@@ -642,8 +682,8 @@ func (m *Model) SetIsAssigning(isAssigning bool) tea.Cmd {
 	}
 
 	if !isAssigning {
-		if m.editor.Mode() == detailedit.ModeAssign {
-			m.editor = m.editor.Exit()
+		if m.editor.Mode() == cmpcontroller.ModeAssign {
+			m.editor.Exit()
 		}
 		return nil
 	}
@@ -653,17 +693,16 @@ func (m *Model) SetIsAssigning(isAssigning bool) tea.Cmd {
 		initialValue = m.ctx.User
 	}
 
-	editor, cmd := m.editor.Enter(detailedit.EnterOptions{
-		Mode:                             detailedit.ModeAssign,
+	m.editor.SetAutocompleteSource(&fuzzyselect.UserMentionSource{WithAtSymbol: false})
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:                             cmpcontroller.ModeAssign,
 		Prompt:                           constants.AssignPrompt,
 		InitialValue:                     initialValue,
-		Source:                           dataautocomplete.WhitespaceSource{},
 		Repo:                             m.repoRef(),
-		SuggestionKind:                   detailedit.SuggestionUsers,
-		EnterFetch:                       detailedit.FetchSilent,
+		EnterFetch:                       cmpcontroller.FetchSilent,
 		HideAutocompleteWhenContextEmpty: false,
 	})
-	m.editor = editor
+	m.editor.ShowCompletions()
 	return cmd
 }
 
@@ -677,7 +716,7 @@ func (m *Model) userAssignedToPr(login string) bool {
 }
 
 func (m *Model) GetIsUnassigning() bool {
-	return m.editor.Mode() == detailedit.ModeUnassign
+	return m.editor.Mode() == cmpcontroller.ModeUnassign
 }
 
 func (m *Model) SetIsUnassigning(isUnassigning bool) tea.Cmd {
@@ -686,19 +725,18 @@ func (m *Model) SetIsUnassigning(isUnassigning bool) tea.Cmd {
 	}
 
 	if !isUnassigning {
-		if m.editor.Mode() == detailedit.ModeUnassign {
-			m.editor = m.editor.Exit()
+		if m.editor.Mode() == cmpcontroller.ModeUnassign {
+			m.editor.Exit()
 		}
 		return nil
 	}
 
-	editor, cmd := m.editor.Enter(detailedit.EnterOptions{
-		Mode:         detailedit.ModeUnassign,
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:         cmpcontroller.ModeUnassign,
 		Prompt:       constants.UnassignPrompt,
 		InitialValue: strings.Join(m.prAssignees(), "\n"),
 		Repo:         m.repoRef(),
 	})
-	m.editor = editor
 	return cmd
 }
 
@@ -738,7 +776,7 @@ func (m *Model) SetEnrichedPR(data data.EnrichedPullRequestData) {
 }
 
 func (m *Model) GetIsLabeling() bool {
-	return m.editor.Mode() == detailedit.ModeLabel
+	return m.editor.Mode() == cmpcontroller.ModeLabel
 }
 
 // SetIsLabeling enters or exits labeling mode
@@ -748,8 +786,8 @@ func (m *Model) SetIsLabeling(isLabeling bool) tea.Cmd {
 	}
 
 	if !isLabeling {
-		if m.editor.Mode() == detailedit.ModeLabel {
-			m.editor = m.editor.Exit()
+		if m.editor.Mode() == cmpcontroller.ModeLabel {
+			m.editor.Exit()
 		}
 		return nil
 	}
@@ -760,25 +798,29 @@ func (m *Model) SetIsLabeling(isLabeling bool) tea.Cmd {
 	}
 	labels = append(labels, "")
 
-	editor, cmd := m.editor.Enter(detailedit.EnterOptions{
-		Mode:                             detailedit.ModeLabel,
+	m.editor.SetAutocompleteSource(&fuzzyselect.LabelSource{})
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:                             cmpcontroller.ModeLabel,
 		Prompt:                           constants.LabelPrompt,
 		InitialValue:                     strings.Join(labels, ", "),
-		Source:                           dataautocomplete.LabelSource{},
 		Repo:                             m.repoRef(),
-		SuggestionKind:                   detailedit.SuggestionLabels,
-		EnterFetch:                       detailedit.FetchSilent,
+		EnterFetch:                       cmpcontroller.FetchSilent,
 		HideAutocompleteWhenContextEmpty: false,
+		ConfirmDiscardOnCancel:           false,
 	})
-	m.editor = editor
+	m.editor.ShowCompletions()
 	return cmd
 }
 
-func (m *Model) repoRef() detailedit.RepoRef {
+func (m *Model) repoRef() cmpcontroller.RepoRef {
 	owner, repo := m.pr.Data.Primary.GetRepoNameAndOwner()
-	return detailedit.RepoRef{
+	return cmpcontroller.RepoRef{
 		NameWithOwner: m.pr.Data.Primary.GetRepoNameWithOwner(),
 		Owner:         owner,
 		Name:          repo,
 	}
+}
+
+func (m *Model) hasData() bool {
+	return m.pr != nil && m.pr.Data != nil
 }
